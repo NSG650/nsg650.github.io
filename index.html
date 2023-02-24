@@ -1,50 +1,69 @@
 <html>
     <head>
-        <link rel="stylesheet" href="https://unpkg.com/98.css">
         <meta property="og:title" content="NSG650's website">
         <meta property="og:type" content="website">
         <meta property="og:description" content="Click on me!">
         <meta property="theme-color" content="#650650">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@200&display=swap" rel="stylesheet">
         <title>Welcome to my website!</title>
+        <style>
+          main {
+              font-family: 'JetBrains Mono', monospace;
+              max-width: 38rem;
+              padding: 2rem;
+              margin: auto;
+          }
+          
+          body {
+              background-color: #232323;
+              color: #aaaaaa;
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 115%;
+          }
+        
+
+          a, a:active, a:visited {
+	          color: #BB0000;
+          }
+
+          .center {
+            margin: auto;
+            width: 60%;
+            padding: 10px;
+          }
+
+
+        </style>
     </head>
-    <body style="background-color: #3B6EA5;">
-        <div class="window" style="width: calc(40%); height: calc(60%); margin: 0 auto;">
-            <div class="title-bar">
-              <div class="title-bar-text">Hi there!</div>
-              <div class="title-bar-controls">
-                <button aria-label="Minimize"></button>
-                <button aria-label="Maximize"></button>
-                <button aria-label="Close"></button>
-              </div>
+    <body>
+        <div class="center">
+            <div>
+                <h2>Hey There! I am NSG650.</h2>
+                <p>-> I am a random 16 year old who likes messing with computers.</p>
+                <p>-> I usually mess around with computers at the Operating System or sometimes hardware level.</p>
+                <p>-> I usually work in C or Python but I am comfortable to work with any language.</p>
             </div>
-            <div class="window-body">
-              <h3>Hi there. I am NSG650.</h3>
-              <ul class="tree-view">
-                <li>
-                    <details>
-                      <summary>whoami</summary>
-                      <ul>
-                        <li><code>PALLAS\NSG650</code></li>
-                        <li>Low level memes</li>
-                        <li>15</li>
-                        <li>He\Him</li>
-                        <li>Timezone: IST.</li>
-                      </ul>
-                    </details>
-                    <details>
-                      <summary>contacts</summary>
-                      <ul>
-                        <li>Email: <code>nsg650@waifu.club</code></li>
-                        <li>Twitter: <code>@nsg650</code></li>
-                        <li>Discord: <code>NSG650#0632</code></li>
-                        <li>Github: <code>nsg650</code></li>
-                        <li>Telegram: <code>@nsg650</code></li>
-                      </ul>
-                    </details>
-                  </li>
-              </ul>
+            <div>
+                <h4>Some of my projects</h4>
+                <a href="https://github.com/NSG650/Polaris">-> Polaris</a>
             </div>
-          </div>
+            <div>
+                <h4>Where you can find me</h4>
+                <a href="https://github.com/NSG650/">-> Github [nsg650]</a> <br>
+                <a href="https://twitter.com/nsg650">-> Twitter [@nsg650]</a> <br>
+                <a href="https://fosstodon.org/@nsg650">-> Mastodon [@nsg650]</a> <br>
+                <a href="https://discord.com/users/588062797108084757">-> Discord [NSG650#0632]</a> <br>
+                <a href="https://t.me/nsg650">-> Telegram [@nsg650]</a> <br>
+                <a href="https://www.reddit.com/u/nsg650">-> Reddit [u/NSG650]</a> <br>
+            </div>
+            <hr>
+            <div>
+                <h4>Recent blog posts</h4>
+                <a href="blogs/24-2-2023.html">-> 24-2-2023: Hello World!</a> <br>
+            </div>
+        </div>
     </body>
 </html>
