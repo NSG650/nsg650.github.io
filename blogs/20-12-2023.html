@@ -1,0 +1,231 @@
+<html>
+    <head>
+        <meta property="og:title" content="NSG650's blog">
+        <meta property="og:type" content="website">
+        <meta property="og:description" content="XNU on the Raspberry Pi [Part 2]">
+        <meta content="https://nsg650.github.io/blogs/assets/xnu_on_pi_3b_plus.jpg" name="og:image">
+        <meta property="theme-color" content="#650650">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="../res/style.css">
+        <title>XNU on the Raspberry Pi [Part 2]</title>
+    </head>
+
+    <body>
+        <div class="center">
+            <h1>XNU on the Raspberry Pi [Part 2]</h1>
+            <h4>Posted on 20-12-2023</h4>
+            <div>
+                <p>This is in continuation of my <a href="8-7-2023.html">previous</a> blog post about trying to get the XNU kernel running on the Raspberry Pi 3.</p>
+            <div>
+            <div>
+                <h2>Short recap</h2>
+                <p>In my previous blog post, I had modified the bootloader limine to load and run the Mach-O XNU kernel but later on in the kernel <code>wfe_timeout_init</code> would fail.</p>
+                <p>I decided to patch those instructions out and continue execution but it kept failing usually in stages where it involved reading the device tree such as <code>ml_parse_cpu_topology</code>.</p>
+            </div>
+            <div>
+                <h2>Looking up online again</h2>
+                <p>I decided to look up more attempts of other people trying to get XNU running on the BCM2837. I stumbled across <a href="https://github.com/FlorentRevest/u-boot">this</a> fork of u boot and decided to try it out.</p>
+                <p>I built the u-boot fork and ran it under qemu and it worked so much better.</p>
+                <p>The kernel made it through the functions that it was failing before such as <code>ml_parse_cpu_topology</code>. However it crashed right after <code>arm_vm_init</code>.</p>
+            </div>
+            <div>
+                <h2>Figuring out the crash</h2>
+                <p>The crash occurred later on when it tried accessing the device tree again.</p>
+                <p style="font-size: 70%">
+                    <img src="assets/20-12-2023/SecureDTLookupEntry_fail.jpg" alt="The kernel crashes at SecureDTLookupEntry"><br>
+                    The kernel crashes at SecureDTLookupEntry
+                </p>
+                <p>After looking around a bit in the kernel and how the page tables were setup the patch was relatively simple.</p>
+                <pre>      
+    // in osfmk/arm64/arm_vm_init.c:2070
+    #if XNU_MONITOR
+        for (vm_offset_t cur = (vm_offset_t)pmap_stacks_start; cur < (vm_offset_t)pmap_stacks_end; cur += ARM_PGBYTES) {
+            arm_vm_map(cpu_tte, cur, ARM_PTE_EMPTY);
+        }
+    #endif    
+        PE_slide_devicetree(gVirtBase - gPhysBase); // Added because the 1:1 physical mappings are gone and 
+                                                        // we don't want to continue accessing those old addresses    
+        pmap_bootstrap(dynamic_memory_begin);    
+        disable_preemption();    
+        /*
+         * Initialize l3 page table pages :
+         *   cover this address range:
+         *	2MB + FrameBuffer size + 10MB for each 256MB segment
+         */            
+                </pre>
+            </div>
+            <div>
+                <h2>Running it!</h2>
+                <p>After the patch and recompiling the kernel it worked. It made it to the UART initialization and I was able to view the kernel messages!</p>
+                <p style="font-size: 70%">
+                    <img src="assets/20-12-2023/it_booted.jpg" alt="It booted!"><br>
+                    It booted!
+                </p>
+                <p>I checked the kernel arguments used by chenguokai and managed to get to the same place where he had gotten as well.</p>
+                <table>
+                    <tr>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/kexts_being_loaded.png" alt="Loading kexts"><br>
+                                Loading kexts
+                            </p>
+                        </th>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/crash_trying_to_load_d421ap_drivers.png" alt="Crashed because it did not find the D412AP drivers."><br>
+                                Crashed because it did not find the D412AP drivers.
+                            </p>
+                        </th>
+                    </tr>
+                </table>
+                <p>Now that it worked under qemu I decided to test on real hardware</p>
+            </div>
+            <div>
+                <h2>Real hardware testing.</h2>
+                <p>I decided to try it out on my Raspberry Pi 3 B+. Since my Raspberry Pi had a broken sd card slot I decided to USB boot it. Preparing the USB was easy.</p>
+                <p style="font-size: 70%">
+                    <img src="assets/20-12-2023/contents_of_the_usb.png" alt="Files on the USB."><br>
+                    Files on the USB.
+                </p>
+                <p>I copied over the kernel and the dtb used along with the dtb for u-boot, bootcode.bin, start.elf, the u-boot binary and a basic config.txt file. The content of the config file is the following.</p>
+                <pre>
+
+   kernel=u-boot.bin
+   arm_64bit=1
+   device_tree=bcm2710-rpi-3-b-plus.dtb                  
+                </pre>
+                <p>Next thing was wiring up the appropriate GPIO pins for UART on the Pi. XNU sets up GPIO Pin 14, 15 on the Pi for UART.</p>
+                <p>Here is a little trick, If you don't have a UART to USB adapter on hand you can use an existing microcontroller board. Make sure it's operating voltage matches the device you are trying to debug.</p> 
+                <p>For the microcontroller board just disable the chip itself. Usually this involves setting the reset pin to ground (on Arduinos) or setting the enable pin to ground (on ESP8266/32 which is what I was using for this).</p>  
+                <p>Then simply wire up the TX on the Pi to RX on the microcontroller board (or TX in my case since the labeling was incorrect on the board :P).</p>
+                <table>
+                    <tr>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/pi_and_esp32_breadboard.png" alt="Wiring diagram for Pi and ESP32"><br><br>
+                                Wiring diagram for Pi and ESP32
+                            </p>
+                        </th>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/pi_and_ftdi.png" alt="Wiring diagram for Pi and FTDI"><br><br>
+                                Wiring diagram for Pi and FTDI
+                            </p><br>
+                            <p>In case you have a USB to UART adapter then you would wire it up in the following manner.</p>
+                        </th>
+                    </tr>
+                </table>
+                <p>I had not set up TX since I didn't want to risk frying anything and we don't have any form of input yet so it did not make sense setting it up.</p>
+            </div>
+            <div>
+                <h2>Running it on Real hardware</h2>
+                <p>Well did it work on real hardware after all this?</p>
+                <b><i><p>YES! It did!</p></i></b>
+                <table>
+                    <tr>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/xnu_on_pi_3b_plus.jpg" alt="Real hardware setup"><br><br>
+                                Real hardware setup
+                            </p>
+                        </th>
+                    </tr>
+                    <tr>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/uart_output_pi3bplus.png" alt="UART output on the Pi 3B+"><br>
+                                UART output on the Pi 3B+
+                            </p>
+                        </th>
+                    </tr>
+                </table>
+
+                <p>I also tested it on a Raspberry Pi 3 B at my school and it worked on it as well.</p>
+                <table>
+                    <tr>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/xnu_on_pi_3b_at_school.jpg" alt="Real hardware setup at school"><br><br>
+                                Real hardware setup
+                            </p>
+                        </th>
+                    </tr>
+                    <tr>
+                        <th>
+                            <p style="font-size: 70%">
+                                <img src="assets/20-12-2023/uart_output_pi3b.png" alt="UART output on the Pi 3B"><br>
+                                UART output on the Pi 3B
+                            </p>
+                        </th>
+                    </tr>
+                </table>
+            </div>
+            <div>
+                <h2>How do I get this up and running?</h2>
+                <p>You need to build the u-boot fork and the XNU kernel or you can use the precompiled binaries over <a href="https://github.com/NSG650/nsg650.github.io/releases/tag/rpi-xnu">here</a>.</p>
+                <div>
+                    <h3>Building u-boot</h3>
+                    <p>I cloned the <a href="https://github.com/FlorentRevest/u-boot">repo</a> and ran the following commands</p>
+                    <pre>
+    
+    make clean; make mrproper; make distclean
+    export CROSS_COMPILE=aarch64-none-elf-
+    make rpi_3_defconfig
+    make menuconfig
+    make -j8
+                    </pre>
+                    <p>If you are building on linux it might fail to build. In such a case you have to revert <a href="https://github.com/FlorentRevest/u-boot/commit/b5b188ef69aa98885697c5e753cc2ea4c4e29777">this</a> commit.</p>
+                    <p>In the menu config navigate to <code>Command line interface->Boot Commands</code> and enable <code>bootxnu</code> and save it.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/20-12-2023/uboot_menu_config.png" alt="u-boot menu config with bootxnu option enabled"><br>
+                        u-boot menu config with bootxnu option enabled
+                    </p>
+                    <p>After it is done building you should be left with a <code>u-boot.bin</code> file.</p>
+                </div>
+                <div>
+                    <h3>Building XNU</h3>
+                    <p>The XNU kernel source used here is from chenguokai's writeup. You can find it <a href="https://github.com/chenguokai/chenguokai/releases/tag/xnu">here</a>.</p>
+                    <p>Make sure to do a clean build. For the build steps I just followed <a href="https://kernelshaman.blogspot.com/2021/02/building-xnu-for-macos-112-intel-apple.html">this</a> guide.</p>
+                    <p>Apply the patch I mentioned above and then build it using the following command.</p>
+                    <pre>
+
+    make SDKROOT=macosx ARCH_CONFIGS=arm64 MACHINE_CONFIGS=bcm2837 KERNEL_CONFIGS=development LOGCOLORS=y -j4
+                    </pre>
+                    <p>After it's done building you should be left with the <code>kernel.development.bcm2837</code> file</p>
+                </div>
+                <div>
+                    <h3>Running it under qemu</h3>
+                    <p>To run it under qemu, I made a simple virtual disk image, formatted as MBR FAT32 and copied over the kernel file and the rpi.dtb file. To run it, I used the following command.</p>
+                    <pre>
+
+    qemu-system-aarch64 -M raspi3b -kernel u-boot.bin -serial file:/dev/stdout -serial file:/dev/stdout -serial file:/dev/stdout -usb \
+    -device usb-mouse -device usb-kbd -drive file=test.img,if=sd,format=raw -m 1024
+                    </pre>
+                    <p>Once you drop to the u-boot shell run the following commands.</p>
+                    <pre>
+
+    load mmc 0 ${kernel_addr_r} kernel.bcm2837
+    load mmc 0 ${fdt_addr_r} rpi.dtb
+    env set bootargs "debug=0x8 kextlog=0xfff -noprogress"
+                    </pre>
+                    <p>Finally run the kernel with the command</p>
+                    <pre>
+
+    bootxnu ${kernel_addr_r} ${fdt_addr_r}
+                    </pre>
+                </div>
+            </div>
+            <div>
+                <h2>Conclusion</h2>
+                <p>I was super happy that I managed to get XNU running on the Pi at last. In the end I did not get to use my own bootloader but did learn a bit about the XNU kernel which helped me in patching it and I managed to get XNU running further.</p>
+                <p>Thank you so much for reading this blog post and Happy Holidays!</p>
+            </div>
+            <div>
+                <h2>Credits</h2>
+                <a href="https://github.com/FlorentRevest/u-boot">-> FlorentRevest's u-boot fork</a><br>
+                <a href="https://kernelshaman.blogspot.com/2021/02/building-xnu-for-macos-112-intel-apple.html">-> kernelshaman's guide for building XNU</a><br>
+                <a href="https://github.com/chenguokai/chenguokai/blob/master/writeup_xnu_bcm2837.md">-> chenguokai's writeup and published files</a><br>
+            </div>
+        </div>
+    </body>
+</html>
