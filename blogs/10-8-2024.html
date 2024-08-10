@@ -1,0 +1,186 @@
+<html>
+    <head>
+        <meta property="og:title" content="NSG650's blog">
+        <meta property="og:type" content="website">
+        <meta property="og:description" content="Out of development yet valid.">
+        <meta property="og:image" content="https://nsg650.github.io/blogs/assets/10-8-2024/demo.png">
+        <meta property="theme-color" content="#650650">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="../res/style.css">
+        <title>Out of development yet valid.</title>
+    </head>
+    <body>
+        <div class="center">
+           <h1>Out of development yet valid.</h1>
+           <h4>Posted on 10-8-2024</h4>
+           <div>
+                <p>At the start of this year, I stumbled across this weird driver. I
+                    decided to throw it into IDA and found out that it is WinRing0 which
+                    any limited user can access. The best (worst?) part? It was signed and
+                    it can still be loaded. I decided to play around with it.</p>
+           </div>
+           <div>
+              <h2>What is WinRing0?</h2>
+              <p>From the <a href="https:github.com/GermanAizek/WinRing0">github repo</a>.  </p>
+              <blockquote>
+                WinRing0 is a hardware access library for Windows. <br>
+                WinRing0 library allows x86/x64 Windows applications to access <br>
+                -> I/O port <br>
+                -> MSR (Model-Specific Register) <br>
+                -> PCI <br>
+              </blockquote>
+              <p>
+                Such drivers are popularly used among tools for overclocking tools for
+                CPUs/GPUs, hardware control for things such as RGB on the
+                motherboard/RAM, and tools that provide information about the system
+                such as voltages, temperatures, etc.
+                Digging into the code, I also found out that it allows access to
+                reading and writing to the system's physical memory.
+            </p>
+               <p>
+                The code does
+                make use of <code>IoCreateDeviceSecure</code> which is good since such a driver
+                should be used only by Administrators (I digress despite being
+                Administrator only bypassing the OS' security mechanism should not be
+                allowed at all).
+              </p>
+                <p style="font-size: 70%">
+                    <img src="assets/10-8-2024/new_driver_code.png" alt="Driver source showing it uses IoCreateDeviceSecure"><br>
+                    Driver source showing it uses IoCreateDeviceSecure
+               </p>
+                <p>
+                    However, the version I have does NOT make use of <code>IoCreateDeviceSecure</code>
+                    but rather <code>IoCreateDevice</code> which means even limited users can access this driver!
+                </p>
+                <p style="font-size: 70%">
+                    <img src="assets/10-8-2024/ida_disassembly_showing_IoCreateDevice.png" alt="Ida disassembly showing the driver uses IoCreateDevice"><br>
+                    Ida disassembly showing the driver uses IoCreateDevice
+               </p>
+               <p style="font-size: 70%">
+                <img src="assets/10-8-2024/WinObj_showing_permissions_of_the_driver.png" alt="WinObj showing the access permissions of the driver"><br>
+                WinObj showing the access permissions of the driver
+                </p>
+           </div>
+           <div>
+            <h2>How can we exploit this?</h2>
+                <p>
+                    Initially I thought one could read the CR3 register (on x86_64 this
+                    holds the physical address for the PML4 base) and manually find the
+                    physical addresses for certain important variables.
+                </p>
+                <p>
+                    However, this driver does not provide any access to any CR registers so, we have to
+                    go with the second approach which is scanning the entire memory
+                    manually. In order to scan the memory, we need to know which memory
+                    regions are valid and can be scanned. Fortunately, Windows provides a
+                    registry key just for providing this information!
+                </p>
+                <div>
+                    <h3>Fetching the memory map of the system</h3>
+                    <p>Windows provides a registry key
+                        <code>HKEY_LOCAL_MACHINE\HARDWARE\RESOURCEMAP\System Resources\Physical
+                            Memory</code> which contains the physical memory map of the system. It also
+                        provides reserved memory regions. These reserved regions are usually
+                        used for hardware MMIO. We would not like to touch these regions so we
+                        would skip over these regions. The funny thing is this registry key is
+                        accessible to limited users as well. I wrote a basic program to print
+                        out the memory map and used this in the exploit.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/10-8-2024/memory_map_dump.png" alt="Memory map dump of the system"><br>
+                            Memory map dump of the system
+                        </p>
+                </div>
+                <div>
+                    <h3>What do we look for?</h3>
+                    <p>I decided to look for the <code>EPROCESS</code> structures of a system process and
+                        for the cmd.exe process. The <code>EPROCESS</code> structure contains various
+                        information about the running process such as the name, creation time,
+                        etc. We are interested in the token. A token specifies the security
+                        context of the running thread or process, so, if we steal a system
+                        process' token (let's say lsass.exe) and apply it to our process
+                        (cmd.exe) then the process would have the security context of a system
+                        process. We escalated the privileges. How do we look for the <code>EPROCESS</code>
+                        structure in memory though?</p>
+                </div>
+                <div>
+                    <h3>Pools</h3>
+                    <p>In Windows, memory allocations in the kernel are made using the
+                        <code>ExAllocatePool</code> family of functions. The pool address returned is 16
+                        bytes aligned. These functions require a tag for the allocation. The
+                        tag is a 4 byte character associated with the pool. Pool allocations
+                        made for <code>EPROCESS</code> are done using the 'Proc' tag. So we can first start
+                        by scanning the memory for 'Proc'.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/10-8-2024/process_to_pool.png"><br>
+                        </p>
+                        <p style="font-size: 70%">
+                            <img src="assets/10-8-2024/pool_virtual_to_physical.png"><br>
+                        </p>
+                        <p> However that is not enough to find <code>EPROCESS</code> structures in memory since
+                            any random memory chunk can have 'Proc' but that does not make it an
+                            actual pool. So, we need to check for other defining bytes which
+                            proves it is a valid pool containing the <code>EPROCESS</code> structure.</p>
+                        <p>
+                            Thankfully I came across <a href="https://h0mbre.github.io/atillk64_exploit/">this</a> where it mentioned
+                            a few magic bytes to be checked which also marked the start of the
+                            actual <code>EPROCESS</code> structure. In this case the bytes were <code>\x03\x00\xb2\x00</code>.
+                        </p>
+                </div>
+                <div>
+                    <h3>Stealing the token</h3>
+                    <p>After checking the magic bytes, we can check if the name corresponds
+                        to a system process such as lsass.exe, smss.exe, etc. or if its
+                        cmd.exe. When we find either of these, we save the token's location in
+                        physical memory. When we finally find both a system process and
+                        cmd.exe's token locations, we break out of the loop. We copy the token
+                        from the system process and finally write it into the cmd.exe</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/10-8-2024/exploit_flow_char_diagram.png" alt="Flow chart of how the entire exploit works" style="height: auto"><br>
+                            Flow chart of how the entire exploit works
+                        </p>
+                </div>
+                <div>
+                    <h2>Demo</h2>
+                    <p>Here is a demo of the exploit running on a Windows Server 2012 R2
+                        virtual machine with secure boot enabled to prove that indeed the
+                        driver is signed and loaded by the system. The final exploit can be
+                        found <a href="https://gist.github.com/NSG650/d718fcf5aa78a407783e3404d7b54128">here</a></p>
+                    <video height="" controls>
+                        <source src="assets/10-8-2024/demo_video.mp4" type="video/mp4">
+                    </video>
+                </div>
+                <div>
+                    <h2>Regarding the setup</h2>
+                    <p>In NT 10 there have been more restrictions imposed on what ranges can
+                        be and can not be mapped. There is also the introduction of
+                        <code>MiShowBadMapper</code> which prevents such "scanning" of memory from taking
+                        place. There are probably techniques which allow one to bypass these
+                        and scan the entire system memory but since I was busy and had other
+                        work to do so I decided to spin up a Windows Server 2012 R2 virtual
+                        machine, update it and do all the testing under that. My main goal was to show
+                        that the driver exposed such interfaces which allows for these
+                        exploits.</p>
+                </div>
+                <div>
+                    <h2>Conclusion</h2>
+                    <p>Even if you find a signed driver, it doesn't mean the driver is going
+                        to be safe. There have been cases of such drivers being signed and
+                        shipped in products. I believe there should be stricter processes on
+                        how these drivers are signed. Microsoft should also revoke signatures
+                        for drivers for products that are no longer in development. This
+                        minimizes the number of exploited drivers or crashes caused due to
+                        silly issues such as the CrowdStrike incident.
+                        This driver was included with <a href="https:www.evga.com/precisionxoc/">EVGA's Precision XOC</a> software which is no longer
+                        in development but the driver included is still signed and valid.
+                    </p>
+                </div>
+                <div>
+                    <h2>Credits</h2>
+                    <a href="https://h0mbre.github.io/atillk64_exploit/]">-> Hombre's blog on exploiting a similar driver</a> <br>
+                    <a href="https://github.com/stong/CVE-2020-15368">-> Cts' CVE-2020-15368 repo where another similar driver was exploited</a> <br>
+                    <a href="http:blog.rewolf.pl/blog/?p=1630">-> ReWolf's blog regarding exploiting ntiolib.sys winio.sys shipped with MSI products</a> <br>
+                </div>
+           </div>
+        </div>
+    </body>
+</html>

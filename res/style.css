@@ -42,3 +42,8 @@ pre {
   background-color: #121212;
   color: #bb0000;
 }
+
+video {
+    max-width: 100%;
+    height: auto;
+}
