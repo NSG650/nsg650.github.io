@@ -1,0 +1,227 @@
+<html>
+    <head>
+        <meta property="og:title" content="NSG650's blog">
+        <meta property="og:type" content="website">
+        <meta property="og:description" content="Syscall to become System">
+        <meta property="og:image" content="https://nsg650.github.io/blogs/assets/28-9-2024/demo.png">
+        <meta property="theme-color" content="#650650">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="../res/style.css">
+        <title>Syscall to become System</title>
+    </head>
+    <body>
+        <div class="center">
+            <h1>Syscall to become System</h1>
+            <h4>Posted on 28-9-2024</h4>
+            <div>
+                <p>
+                    In my previous blog post I showed a signed WinRing0 driver and wrote a PoC exploit that scanned the entire system's memory to look for a system process, steal its token and give it to our running process. 
+                    This was okay but there's an even better vector to exploit this driver. 
+                    The vector being the driver exposing reads and writes to the CPU's MSR.
+                </p>
+            </div>
+            <div>
+                <h2>Model Specific Registers</h2>
+                <p>
+                    The MSR in x86 is used for debugging, performance tracking and for enabling and setting up some CPU features. 
+                    One of these features is the <code>SYSCALL</code> instruction. The MSR register <code>0xc0000082</code> holds the address for the syscall handler when the <code>SYSCALL</code> instructions is executed. 
+                    Since the driver allows me to read and write to the MSR I can point it to my own handler where it would run my code as Ring 0!
+                    Fortunately <a href="https://twitter.com/_xeroxz">IDontCode</a> has done similar <a href="https://git.back.engineering/IDontCode/msrexec">work</a> before which was VERY helpful. Thank you so much!!
+                </p>
+            </div>
+            <div>
+                <h2>SYSCALL</h2>
+                <p>
+                    The <code>SYSCALL</code> instruction is how a system call is made on most x86_64 operating systems. 
+                    When the <code>SYSCALL</code> instruction is executed the processor switches to kernel mode and loads <code>IA32_LSTAR</code> value into RIP. 
+                    This register holds the pointer to the system call handler and it is set up by the OS when initializing the CPUs. 
+                    The CPU stores the previous instruction pointer in RCX and RFLAGS in R11. 
+                    It masks the RFLAGS using the value in the <code>IA32_FMASK</code> register. 
+                    However <code>SYSCALL</code> does not preserve the RSP, that is left to the OS to handle.
+                </p>
+                <p style="font-size: 70%">
+                    <img src="assets/28-9-2024/KiSystemCall64.png" alt="KiSystemCall64 saves the user RSP and loads the kernel RSP"><br>
+                    KiSystemCall64 saves the user RSP and loads the kernel RSP
+                </p>
+                <p style="font-size: 70%">
+                    <img src="assets/28-9-2024/KPCR.png" alt="The KPCR holds the user RSP"><br>
+                    The KPCR holds the user RSP
+                </p>
+                <p style="font-size: 70%">
+                    <img src="assets/28-9-2024/KPRCB.png" alt="The KPRCB holds the kernel RSP"><br>
+                    The KPRCB holds the kernel RSP
+                </p>
+                <p>
+                    Through the disassembly you can see how Windows first preserves the user RSP and then loads in the kernel RSP to be used. 
+                    Windows swaps out the GS value for the <code>KPCR</code> so it can access certain CPU specific variables. 
+                    Under user mode the GS points to the <code>TEB</code>.
+                </p>
+                <p style="font-size: 70%">
+                    <img src="assets/28-9-2024/how_syscalls_are_dispatched.png" alt="Flow chart of what Windows does when a system call is made"><br>
+                    Flow chart of what Windows does when a system call is made
+                </p>
+            </div>
+            <div>
+                <h2>The Exploit</h2>
+                <p>
+                    So we can just write a syscall handler and then modify the <code>IA32_LSTAR</code> to point to our own handler right? 
+                    Unfortunately things are usually not that straightforward. 
+                    We have to bypass some security mechanisms.
+                </p>
+                <div>
+                    <h3>Supervisor Mode Execution Prevention (SMEP)</h3>
+                    <p>
+                        SMEP is a feature introduced in most new x86_64 CPUs starting from Intel Ivy Bridge and AMD Excavator. 
+                        It prevents the CPU running in kernel mode from executing code in user space memory. 
+                        SMEP is enabled by setting bit 20 of the CR4 register to 1. Windows has this enabled since Windows 8 onwards.
+                    </p>
+                </div>
+                <div>
+                    <h3>Supervisor Mode Access Prevention (SMAP)</h3>
+                    <p>
+                        SMAP is similar to SMEP except it prevents the CPU running in kernel mode to access data in user space memory. 
+                        SMAP is enabled by setting bit 21 of the CR4 register to 1. 
+                        However this was recently introduced from Windows 10 build 19H1 onwards.
+                    </p>
+                </div>
+                <p style="font-size: 70%">
+                    <img src="assets/28-9-2024/CR4_bits.png" alt="CR4 register bits"><br>
+                    CR4 register bits
+                </p>
+                <div>
+                    <h3>Kernel Virtual Address Shadow (KVAS)</h3>
+                    <p>
+                        It is a mitigation for the meltdown vulnerability. 
+                        It works by isolating userspace and kernel space much more. Each process has two page tables, user side and kernel side. 
+                        The user side page table has a minimal section of the kernel mapped. 
+                        The mapped kernel section contains code only for interrupt handling, dispatching system calls, etc.
+                    </p>
+                    <p>
+                        Both the page tables have the entire user space memory mapped.
+                        When a system call is made Windows switches to the kernel side page table and after it is done it will switch back to the user page table. 
+                        This is done so any data in kernel space can not be accessed via any means.
+                    </p>
+                    <p style="font-size: 70%">
+                        <img src="assets/28-9-2024/KVAS.png" alt="Diagram showing how KVAS switches out the page tables used" style="height: 60%"><br>
+                        Diagram showing how KVAS switches out the page tables used
+                    </p>
+                    <p>
+                        However on my system this was not enabled by default and looking around I found out my CPU did not have the vulnerability so I am guessing Windows did not enable it? 
+                        It makes sense since KVAS does have a performance overhead. 
+                        Either way this made the exploit easier since now I did not have to deal with KVAS now and I wanted to be done with this quickly. 
+                        It was worth mentioning since if you are running this exploit on an older CPU KVAS can prevent it from working successfully. 
+                    </p>
+                    <p style="font-size: 70%">
+                        <img src="assets/28-9-2024/User_and_Kernel_DirectoryBase.png" alt="There are two variables for each page table however since KVAS is disabled only DirectoryTableBase is set"><br>
+                        There are two variables for each page table however since KVAS is disabled only DirectoryTableBase is set
+                    </p>
+                </div>
+                <p>We can bypass these security mechanisms put in place by simply disabling them.</p>
+                <div>
+                    <h3>Return Oriented Programming (ROP)</h3>
+                    <p>
+                        ROP is a technique which abuses how function calls are made and returned on CPU architectures with stack based returns that is where the instruction pointer is pushed and popped off the stack such as x86_64. 
+                        ROP involves searching gadgets which are functions ending with <code>RET</code> and building a chain of these gadgets to achieve a particular goal. 
+                        In this case we want to disable SMEP and jump to our syscall handler.
+                    </p>
+                    <p>
+                        There are various tools for finding these gadgets in a program binary. 
+                        I simply ran <a href="https://github.com/0vercl0k/rp">rp++</a> on <code>ntoskrnl.exe.</code>
+                        I needed gadgets for writing to the CR4 register, popping the value to the register which is written to the CR4 register and <code>SYSRET</code>.
+                    </p>
+                </div>
+                <div>
+                    <h3>Setting up the ROP Chain</h3>
+                    <p>
+                        Remember how <code>SYSCALL</code> leaves the OS to handle switching stacks? 
+                        This means we can simply set up the ROP chain on our user stack and then <code>SYSCALL</code> and the system will happily perform the ROP chain since it did not switch out the stack for the kernel one. 
+                        The ROP chain setup here is the same as the one in <a href="https://git.back.engineering/IDontCode/msrexec">msrexec</a>.
+                    </p>
+                    <p>
+                        We set the <code>IA32_LSTAR</code> to point to our <code>POP RCX</code> gadget. We set up the stack in the following manner.
+                    </p>
+                    <pre>
+
+    +----------------------------------+
+    | CR4 register value with SMEP off |
+    ------------------------------------
+    | MOV CR4, RCX Gadget              |
+    ------------------------------------
+    | Syscall Handler                  |
+    ------------------------------------
+    | POP RCX Gadget                   |
+    ------------------------------------
+    | Original CR4 register value      |
+    ------------------------------------
+    | MOV CR4, RCX Gadget              |
+    ------------------------------------
+    | POP RCX Gadget                   |
+    ------------------------------------
+    | End of the function              |
+    ------------------------------------
+    | SYSRET Gadget                    |
+    +----------------------------------+                        
+                    </pre>
+                    <p>
+                        Since RCX is lost we have to compensate for that by pushing the end of the function's address on the stack and popping it before the <code>SYSRET</code>. 
+                        The value of CR4 in the exploit is hard coded but it is possible to guess it from userspace.
+                    </p>
+                    <p>
+                        For bypassing SMAP simply set the AC bit in RFLAGS to 1. 
+                        This can be set using the <code>STAC</code> instruction however the instruction requires the processor to be running in kernel mode. 
+                        However thanks to msrexec I learnt that the bit can be set from user mode. 
+                        The system call flag mask does not check for the AC bit thus one can simply set the bit to 1 and disable SMAP temporarily.
+                    </p>
+                    <p style="font-size: 70%">
+                        <img src="assets/28-9-2024/RFLAGS_bits.png" alt="The AC flag can be cleared from userspace and it will be preserved in kernel mode as well"><br>
+                        The AC flag can be cleared from userspace and it will be preserved in kernel mode as well
+                    </p>
+                    <p>
+                        -> The ROP chain first loads in the value of CR4 with SMEP disabled into RCX. <br>
+                        -> It then loads the value in RCX to CR4 effectively disabling SMEP. <br>
+                        -> It jumps to the syscall handler setup in user space memory. <br>
+                        -> After that it loads the original value of CR4 into RCX and writes that into CR4. <br>
+                        -> Finally it loads in the address for the end of the function into RCX. This is done since the <code>MOV CR4</code> gadget makes use of the RCX register and the original value of RCX is lost. <br>
+                        -> Finally it <code>SYSRET</code>s back into user space. <br>
+                    </p>
+                </div>
+                <div>
+                    <h3>The System Call Handler</h3>
+                    <p>
+                        The system call handler is extremely simple.
+                        First <code>SWAPGS</code> is called to switch to the kernel's GS which contains the <code>KPCR</code>. 
+                        The <code>KPCR</code> contains information about the current CPU. 
+                        We are interested in the <code>KPRCB</code> which contains <code>CurrentThread</code>.
+                        We can find the parent process from this and search the process list for System and write in the System token into our process escalating our privileges.
+                        Finally we restore the original system call handler, <code>SWAPGS</code> to switch to the user GS and return.
+                        The ROP chain then finally returns back to user space.
+                    </p>
+                    <p>
+                        Since this exploit sets up the stack in a very specific manner if another thread comes along and makes a system call this can very well screw up the system. 
+                        To avoid this the process and thread priority is set to the highest possible value and once the exploit is complete it is restored back.
+                    </p>
+                </div>
+            </div>
+            <div>
+                <h2>Demo</h2>
+                <p>This was tested on a Windows 11 machine fully up to date (as of 15/8/2024 the time when the exploit was written). You can find the final exploit <a href="https://gist.github.com/NSG650/aac65399bbe74519636efc0a651c0425">here</a>.</p>
+                <video controls>
+                    <source src="assets/28-9-2024/demo_video.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div>
+                <h2>Conclusion</h2>
+                <p>
+                    I was able to apply my osdev knowledge to understand the vector and exploit it. 
+                    If you think any corrections have to be made in diagrams or explanations then feel free to reach out to me. 
+                    Once again, Thank you so much <a href="https://twitter.com/_xeroxz">IDontCode</a> and the other folks who helped him out for your amazing work!!
+                </p>
+            </div>
+            <div>
+                <h2>Credits</h2>
+                <a href="https://git.back.engineering/IDontCode/msrexec">-> IDontCode's msrexec work</a> <br>
+                <a href="https://s.itho.me/ccms_slides/2021/5/13/26d82ee0-5685-472e-9c4b-453ed6c2d858.pdf">-> NotSurprised's presentation</a> <br>
+            </div>
+        </div>
+    </body>
+</html>
