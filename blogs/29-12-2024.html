@@ -1,0 +1,175 @@
+<html>
+    <head>
+        <meta property="og:title" content="NSG650's blog">
+        <meta property="og:type" content="website">
+        <meta property="og:description" content="I was always there from the start">
+        <meta property="og:image" content="https://nsg650.github.io/blogs/assets/29-12-2024/demo.png">
+        <meta property="theme-color" content="#650650">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="../res/style.css">
+        <title>I was always there from the start</title>
+    </head>
+    <body>
+        <div class="center">
+            <h1>I was always there from the start</h1>
+            <h4>Posted on 29-12-2024</h4>
+            <div>
+                <p>I've always wanted to learn about bootkits and write one. This blog
+                    explains what bootkits are and how the one we wrote works.</p>
+            </div>
+            <div>
+                <h2>Bootkits</h2>
+                <p>A bootkit is a type of malware that infects the system during the boot
+                    process, usually being loaded before the bootloader, allowing it to
+                    patch or hook anything ahead of it. In this case, our goal is to patch
+                    the Windows kernel, <code>ntoskrnl.exe</code>. Bootkits are inherently subtle,
+                    making them very difficult to detect, and, by effect, making it much
+                    harder for anti-virus software to detect them or what changes they
+                    might have made to the system.</p>
+            </div>
+            <div>
+                <h2>UEFI</h2>
+                <p>The Unified Extensible Firmware Interface (UEFI), created to replace
+                    BIOS, acts as an interface between the operating system and the
+                    firmware, providing a standard environment for bootloaders or pre-boot
+                    applications.</p>
+
+                <p>UEFI applications, such as bootloaders or drivers, are Portable
+                    Executables (PEs) stored on a FAT32 partition and loaded by the
+                    firmware during startup. While UEFI applications and drivers are
+                    similar, they differ in key ways: UEFI applications run once and are
+                    unloaded from memory after exiting, whereas UEFI drivers remain in
+                    memory even after the operating system is initialized.</p>
+
+                <p>UEFI exposes two types of services. Boot Services and Runtime
+                    Services.</p>
+
+                <div>
+                    <h3>Boot Services</h3>
+                    <p>Boot services are functions available only before the operating system
+                        is initialized. Once <code>ExitBootServices</code> is called, these services become
+                        inaccessible. They include operations such as retrieving the system's
+                        memory map, accessing the Graphics Output Protocol (GOP), and more.
+                        Due to their one time only availability, boot services are primarily
+                        used by UEFI applications like bootloaders.</p>
+                </div>
+                <div>
+                    <h3>Runtime Services</h3>
+                    <p>Runtime services are functions that remain accessible even after the
+                        operating system has fully initialized. These services include tasks
+                        like getting or setting the system time, shutting down or resetting
+                        the system, and accessing the firmware's environment variables. Unlike
+                        boot services, runtime services remain available after
+                        <code>ExitBootServices</code> is called, making them particularly useful for UEFI
+                        drivers that need to interact with the OS.</p>
+                </div>
+            </div>
+            <div>
+                <h2>Where do we begin?</h2>
+                <p>Our goal is to gain control during the system's boot process, so we'd
+                    like to hook into the bootloader itself. Looking for the bootloader in
+                    memory and patching it to call a hook is tedious. Luckily there's a
+                    better way. We can hook <code>ExitBootServices</code>.</p>
+                <div>
+                    <h3><code>ExitBootServices</code></h3>
+                    <p>ExitBootServices is a function called by the bootloader just before
+                        transferring control to the operating system. At this point, the
+                        kernel and all necessary dependencies are loaded into memory and ready
+                        to execute. The bootloader's only remaining task is to hand control
+                        over to the kernel and pass the <code>LOADER_PARAMETER_BLOCK</code>.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/29-12-2024/winload_calling_ExitBootServices.png" alt="Winload calling ExitBootServices just before giving control to the kernel"><br>
+                        Winload calling ExitBootServices just before giving control to the kernel
+                    </p>
+                    <p>Hooking ExitBootServices is simple. We disable write protection, 
+                        overwrite the function pointer to ExitBootServices in the global Boot Services object,
+                         and then re-enable write protection.
+                    </p>
+                    <p style="font-size: 70%">
+                        <img src="assets/29-12-2024/Hooking_ExitBootServices.png" alt="Hooking ExitBootServices"><br>
+                        Hooking ExitBootServices
+                    </p>
+                    <p>The hook function is minimal and only captures the return address of the caller which points to inside <code>winload!OslFwpKernelSetupPhase1</code>. 
+                        Afterward, it calls the original <code>ExitBootServices</code> to continue the boot process.</p>
+
+                    <p>We go through <code>winload.efi</code> and use a move signature to obtain the pointer to the <code>LOADER_PARAMETER_BLOCK</code>. However, we encountered an issue,
+                         attempting to access the <code>LOADER_PARAMETER_BLOCK</code> results in a crash because we have not switched to the correct address space used by NT.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/29-12-2024/LoaderBlock_Signature.png" alt="Disassembly showing the location of the loader block"><br>
+                        Disassembly showing the location of the loader block
+                    </p>
+                </div>
+                <div>
+                    <h3><code>EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE</code></h3>
+                    <p>Our next step in the bootkit involves registering a handler function in the driver entry, which is triggered when the event is raised.
+                         This event occurs once the new address space is set up, giving us access to both the <code>LOADER_PARAMETER_BLOCK</code> and the kernel. 
+                         To locate the <code>LOADER_PARAMETER_BLOCK</code>, we move our search code into the handler and use the same load signature mentioned earlier.
+                         Once we have the <code>LOADER_PARAMETER_BLOCK</code>, we parse it to find <code>ntoskrnl.exe</code> and extract its base address.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/29-12-2024/VirtualAddressEventHandler.png" alt="Virtual Address change event handler"><br>
+                        Virtual Address change event handler
+                    </p>
+                </div>
+            </div>
+            <div>
+                <h2>Patching the kernel</h2>
+                <p>
+                    Now that we have the kernel base, we can scan the kernel to find any function and modify it as needed.
+                    In this case, our goal is to patch a function called early in the boot process. One such function, <code>IoInitSystem</code>, stands out as an ideal target. 
+                    The part we hook is just called after the core system drivers like the file system, ACPI, etc. are loaded but just before any boot drivers are loaded.
+                </p>
+                <p style="font-size: 70%">
+                    <img src="assets/29-12-2024/Original_IoInitSystem.png" alt="Disassembly of the original IoInitSystem function"><br>
+                    Disassembly of the original IoInitSystem function
+                </p>
+                <p>
+                    By performing another signature search, we locate the address of IoInitSystem, where we patch in a retpoline jump. 
+                    The patching process works as follows
+                </p>
+                <p>-> First, we copy the original code from the function.</p>
+                <p>-> Next, we prepare the shellcode for the retpoline as follows</p>
+                <pre>
+
+    mov  r10, IoInitSystem
+    push r10 ; Keep the original as our return address
+    mov  r10, IoinitSystemHook
+    jmp  r10                    
+                </pre>
+                <p>At the end of the hook function, we restore the original code, and since the last address on the stack is the original function, 
+                    when we return execution continues as normal.</p>
+                <p style="font-size: 70%">
+                    <img src="assets/29-12-2024/Patched_IoInitSystem.png" alt="Disassembly of the patched IoInitSystem function"><br>
+                    Disassembly of the patched IoInitSystem function
+                </p>
+                <p>Since our hook function resides in our UEFI driver, we have to make use of <code>ConvertPointer</code> to get an address that is in the address space utilized by NT.</p>
+                <p>Once inside the hook function, we have control as the kernel. We can parse the <code>PIMAGE_EXPORT_DIRECTORY</code> to find function addresses within the kernel binary, giving us the ability to use any NT function.</p>
+            </div>
+            <div>
+                <p style="font-size: 70%">
+                    <img src="assets/29-12-2024/Flowchart.png" alt="Flowchart of the bootkit's working"><br>
+                    Flowchart of the bootkit's working
+                </p>
+            </div>
+            <div>
+                <h2>Demo</h2>
+                <p>The demo video shows how the bootkit patches NT to display Hello World using <code>ZwDisplayString</code> during boot.</p>
+                <p>The final code can be found <a href="https://github.com/Pdawg-bytes/UEFIBootKit">here</a>.</p>
+                <video controls>
+                    <source src="assets/29-12-2024/demo_video.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div>
+                <h2>Conclusion</h2>
+                <p>
+                    We (<a href="https://github.com/NSG650">NSG650</a> and <a href="https://github.com/Pdawg-bytes">Pdawg</a>) learnt a lot about UEFI and the Windows boot process through this. 
+                    It also reminds us about how scary and powerful these types of malware are and why security measures like Secure Boot are put into place. 
+                </p>
+            </div>
+            <div>
+                <h2>Credits</h2>
+                <a href="https://github.com/Mattiwatti/EfiGuard">-> Mattiwatti's EfiGuard</a> <br>
+                <a href="https://github.com/SamuelTulach/rainbow">-> SamuelTulach's rainbow HWID spoofer bootkit</a> <br>
+            </div>
+        </div>
+    </body>
+</html>
