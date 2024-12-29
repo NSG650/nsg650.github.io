@@ -142,7 +142,7 @@
                     Disassembly of the patched IoInitSystem function
                 </p>
                 <p>Since our hook function resides in our UEFI driver, we have to make use of <code>ConvertPointer</code> to get an address that is in the address space utilized by NT.</p>
-                <p>Once inside the hook function, we have control as the kernel. We can parse the <code>PIMAGE_EXPORT_DIRECTORY</code> to find function addresses within the kernel binary, giving us the ability to use any NT function.</p>
+                <p>Once inside the hook function, we have control as the kernel. We can parse the kernel's <code>IMAGE_EXPORT_DIRECTORY</code> to find function addresses giving us the ability to use any NT function.</p>
             </div>
             <div>
                 <p style="font-size: 70%">
