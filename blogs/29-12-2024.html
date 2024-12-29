@@ -23,7 +23,7 @@
                     process, usually being loaded before the bootloader, allowing it to
                     patch or hook anything ahead of it. In this case, our goal is to patch
                     the Windows kernel, <code>ntoskrnl.exe</code>. Bootkits are inherently subtle,
-                    making them very difficult to detect, and, by effect, making it much
+                    making them very difficult to detect and by effect making it much
                     harder for anti-virus software to detect them or what changes they
                     might have made to the system.</p>
             </div>
@@ -37,7 +37,7 @@
                 <p>UEFI applications, such as bootloaders or drivers, are Portable
                     Executables (PEs) stored on a FAT32 partition and loaded by the
                     firmware during startup. While UEFI applications and drivers are
-                    similar, they differ in key ways: UEFI applications run once and are
+                    similar, they differ in key ways. UEFI applications run once and are
                     unloaded from memory after exiting, whereas UEFI drivers remain in
                     memory even after the operating system is initialized.</p>
 
@@ -81,15 +81,15 @@
                         <img src="assets/29-12-2024/winload_calling_ExitBootServices.png" alt="Winload calling ExitBootServices just before giving control to the kernel"><br>
                         Winload calling ExitBootServices just before giving control to the kernel
                     </p>
-                    <p>Hooking ExitBootServices is simple. We disable write protection, 
-                        overwrite the function pointer to ExitBootServices in the global Boot Services object,
+                    <p>Hooking <code>ExitBootServices</code> is simple. We disable write protection, 
+                        overwrite the function pointer to <code>ExitBootServices</code> in the global Boot Services object
                          and then re-enable write protection.
                     </p>
                     <p style="font-size: 70%">
                         <img src="assets/29-12-2024/Hooking_ExitBootServices.png" alt="Hooking ExitBootServices"><br>
                         Hooking ExitBootServices
                     </p>
-                    <p>The hook function is minimal and only captures the return address of the caller which points to inside <code>winload!OslFwpKernelSetupPhase1</code>. 
+                    <p>The hook function is minimal and only captures the return address of the caller which points to inside <code>OslFwpKernelSetupPhase1</code>. 
                         Afterward, it calls the original <code>ExitBootServices</code> to continue the boot process.</p>
 
                     <p>We go through <code>winload.efi</code> and use a move signature to obtain the pointer to the <code>LOADER_PARAMETER_BLOCK</code>. However, we encountered an issue,
@@ -123,7 +123,7 @@
                     Disassembly of the original IoInitSystem function
                 </p>
                 <p>
-                    By performing another signature search, we locate the address of IoInitSystem, where we patch in a retpoline jump. 
+                    By performing another signature search, we locate the address of <code>IoInitSystem</code>, where we patch in a retpoline jump. 
                     The patching process works as follows
                 </p>
                 <p>-> First, we copy the original code from the function.</p>
