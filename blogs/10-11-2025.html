@@ -1,0 +1,245 @@
+<html>
+    <head>
+        <meta property="og:title" content="NSG650's blog">
+        <meta property="og:type" content="website">
+        <meta property="og:description" content="Catch me if you can">
+        <meta property="og:image" content="https://nsg650.github.io/blogs/assets/10-11-2025/veh_runs_before_seh.png">
+        <meta property="theme-color" content="#650650">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="../res/style.css">
+        <title>Catch me if you can</title>
+    </head>
+    <body>
+        <div class="center">
+            <h1>Catch me if you can</h1>
+            <h4>Posted on 10-11-2025</h4>
+            <div>
+                <p>Exceptions are a part of many high level languages, allowing for a
+                    program to handle an unexpected error gracefully without the process
+                    being terminated.</p>
+                
+                <p>Windows offers its own mechanism for exception handling called as Structured Exception Handling (SEH). This blog post will take a look at SEH on x86_64 and how it works internally.</p>
+            </div>
+            <div>
+                <h2>Structured Exception Handling</h2>
+                <p>SEH is Microsoft's implementation for exception handling in Windows. This extension allows for runtime error handling in C/++. It is also how exceptions in higher level languages such as C# are implemented. This is extensively used in Windows including the kernel. This can be thought of as similar to Unix signals. However the difference is that unlike signals where you register handlers for a particular signal at runtime this gives you the conventional try-catch mechanism that is seen in most high level languages.</p>
+
+                <p>An example usage of SEH can be seen below.</p>
+                <p style="font-size: 70%">
+                    <img src="assets/10-11-2025/SEH_example_usage.png" alt="SEH example code"><br>
+                    Example usage of SEH
+                </p>
+
+                <p>In the <code>__except</code> block a desired filter can be chosen for how the execution should proceed once the exception occurs.</p>
+                
+                <pre>
+                    
+    // Defined values for the exception filter expression
+    #define EXCEPTION_EXECUTE_HANDLER       1
+    #define EXCEPTION_CONTINUE_SEARCH       0
+    #define EXCEPTION_CONTINUE_EXECUTION (-1)
+                </pre>
+
+                <p>-> <code>EXCEPTION_EXECUTE_HANDLER</code> executes the code in the <code>__except</code> block.</p>
+                <p>-> <code>EXCEPTION_CONTINUE_SEARCH</code> looks for the next exception handler to be executed. This is used when an exception is unrecognized.</p>
+                <p>-> <code>EXCEPTION_CONTINUE_EXECUTION</code> executes the code in the <code>__except</code> block and then rerun the code where the exception was thrown.</p>
+
+                <p style="font-size: 70%">
+                    <img src="assets/10-11-2025/div_by_zero_exception_caught.png" alt="Division by zero exception being caught"><br>
+                    Division by zero exception being caught
+                </p>
+
+                <p>Here it can be seen that when the code tries to divide by zero the <code>__except</code> block runs and then using <code>GetExceptionCode</code> we get the exception that occurred which in this case was <code>STATUS_INTEGER_DIVIDE_BY_ZERO</code>.</p>
+
+                <p>Now how are these exceptions implemented and where are these located?</p>
+            </div>
+            <div>
+                <h2>The Exception Directory</h2>
+                <p>The exception directory is a section of the PE executable which contains a list of <code>RUNTIME_FUNCTIONS</code>.</p>
+                
+                <p style="font-size: 70%">
+                    <img src="assets/10-11-2025/pe_exception_directory.png" alt="Exception directory in PE executable"><br>
+                    Exception directory in PE executable
+                </p>
+
+                <pre>
+
+    typedef struct _RUNTIME_FUNCTION {
+        ULONG BeginAddress;
+        ULONG EndAddress;
+        ULONG UnwindData;
+    } RUNTIME_FUNCTION, *PRUNTIME_FUNCTION;
+                </pre>
+
+                <p>This <code>RUNTIME_FUNCTION</code> contains the address range and the unwind data to get information about a particular exception thrown. The <code>UnwindData</code> tells how to handle an exception that occurred in the <code>BeginAddress</code> to <code>EndAddress</code> range.</p>
+
+                <p>When an exception occurs the <code>RtlLookupFunctionEntry</code> function parses this table and finds the corresponding exception handler to execute.</p>
+                <p>It is also possible to add a <code>RUNTIME_FUNCTION</code> table during execution time using the <code>RtlAddFunctionTable</code> function. This is used by higher level languages for implementing exceptions.</p>
+            </div>
+            <div>
+                <h2>When an exception occurs</h2>
+                <p>Now let us take a look at when an exception takes place.</p>
+
+                <div>
+                    <h3>The trap handler</h3>
+                    <p>On x86_64 whenever an exception occurs (for example a division by zero) an interrupt is generated and the interrupt handler set up by the OS is called. I will be looking at division by zero for this example but similar handlers are set up for any other exceptions that occur. The list of interrupt handlers are stored in an Interrupt Descriptor Table.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/idt_exception.png" alt="Interrupt Descriptor Table"><br>
+                        Interrupt Descriptor Table
+                    </p>
+
+                    <p>Each interrupt has its own index for example the division by zero handler is located at index number (vector) 0.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/exception_vector_list.png" alt="List of exception vectors"><br>
+                        List of exception vectors
+                    </p>
+
+                    <p>In x86_64 Windows <code>KiDivideErrorFault</code> is called when a division by zero occurs. Every interrupt handler first preserves the CPU registers such that it can continue execution after the exception or hardware interrupt has been handled. After the context is preserved, an <code>EXCEPTION_RECORD</code> and <code>EXCEPTION_FRAME</code> is prepared, and <code>KiDispatchException</code> is called.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/exception_dispatcher_code.png"><br>
+                    </p>
+                </div>
+
+                <div>
+                    <h3><code>KiDispatchException</code></h3>
+                    <p><code>KiDispatchException</code> is called with an <code>EXCEPTION_RECORD</code> which contains information about the type of exception that occurred, where it occurred and other details regarding it. The <code>EXCEPTION_FRAME</code> includes few other CPU registers and the FPU state.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/KiDispatchException_code.png"><br>
+                    </p>
+
+                    <p>First the Trap frame and Exception frame are converted to a <code>CONTEXT</code> which is used by the exception dispatcher functions in <code>Rtl</code>.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/tf_to_ctx.png" alt="Converting Trapframe to Context"><br>
+                        Converting Trapframe to Context
+                    </p>
+
+                    <p>Based on the type of exception that occurred certain changes are made. For example when a breakpoint occurs the instruction pointer pushed points to the instruction after the breakpoint instruction so it is decremented by one byte.</p>
+
+                    <p>Then, based on which processor mode the exception occurred in, it is handled accordingly. I will look into how user mode exceptions are handled here but for kernel mode it directly calls the function for dispatching exceptions.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/exception_tracker.png"><br>
+                    </p>
+
+                    <p>Now based on how many times an exception has occurred it will be handled differently. If it is the first time, the debugger (if any present) will be informed and then the exception handler is called. If it is the second time only the debugger will be informed. If it is the third time the process will be terminated. Usually when there isn't any exception handler present it will fall through and be striked out the third time. <code>KiDispatchExceptionToUser</code> then passes the exception to user mode.</p>
+                </div>
+
+                <div>
+                    <h3><code>KiDispatchExceptionToUser</code></h3>
+                    <p>The function first sets up the stack where it would store the context and other exception information.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/setting_up_user_stack.png" alt="Setting up the user mode stack"><br>
+                        Setting up the user mode stack
+                    </p>
+
+                    <p>Then it writes in the <code>UserStack</code> and sets up the registers pointing to Exception Record and Context.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/writing_exception_record_and_ctx.png" alt="Writing exception record and context to the user stack"><br>
+                        Writing exception record and context to the user stack
+                    </p>
+
+                    <p>Finally it sets the instruction pointer to a user mode function. When the function returns and the interrupt is finished being handled the registers are restored the processor will execute code at this particular function.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/setting_ip_to_usermode_handler.png" alt="Setting instruction pointer to the user mode dispatcher"><br>
+                        Setting instruction pointer to the user mode dispatcher
+                    </p>
+
+                    <p>This function is located in <code>ntdll.dll</code>.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/usermode_handler_being_retrieved_from_ntdll.png" alt="KiUserExceptionDispatcher being retrieved from ntdll"><br>
+                        KiUserExceptionDispatcher being retrieved from ntdll
+                    </p>
+
+                    <p><code>KiUserExceptionDispatcher</code> then calls <code>RtlDispatchException</code> which dispatches the exception. If an error occurs then <code>ZwRaiseException</code> is called otherwise <code>ZwContinue</code> is called and the thread execution continues.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/KiUserExceptionDispatcher_code.png"><br>
+                    </p>
+                </div>
+
+                <div>
+                    <h3><code>RtlDispatchException</code></h3>
+                    <p>The function first executes any vectored exception handlers and then the ones that continue after an exception</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/RtlDispatchException_code.png"><br>
+                    </p>
+
+                    <p>If there are no vectored exception handlers it calls an internal unwind function here <code>RtlpUnwindInternal</code> to look for the the corresponding exception handler.</p>
+
+                    <p>As I have previously stated <code>RtlLookupFunctionEntry</code> looks for the corresponding function in the function table. This function internally calls <code>RtlLookupFunctionTable</code> to get the running executable's exception directory and locate the function entry from there.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/function_lookup.png" alt="Looking up function entry in exception directory"><br>
+                        Looking up function entry in exception directory
+                    </p>
+
+                    <p><code>RtlVirtualUnwind</code> is then called to get the corresponding exception handler which is then called.</p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/finding_the_exception_handler.png" alt="RtlVirtualUnwind getting exception handler"><br>
+                        RtlVirtualUnwind getting exception handler
+                    </p>
+
+                    <p style="font-size: 70%">
+                        <img src="assets/10-11-2025/exception_handler_being_called.png"><br>
+                    </p>
+                </div>
+            </div>
+            <div>
+                <h2>Vectored Exception Handling</h2>
+                <p>Vectored Exception Handling allows for a program to register exception handlers for the entire process. Unlike SEH where it is for a specific section of code, VEH is global. An example usage of VEH can be seen here.</p>
+
+                <p style="font-size: 70%">
+                    <img src="assets/10-11-2025/VEH_example_usage.png" alt="Example usage of VEH"><br>
+                    Example usage of VEH
+                </p>
+
+                <p>VEH are run before SEH runs as it was seen previously.</p>
+
+                <p style="font-size: 70%">
+                    <img src="assets/10-11-2025/veh_runs_before_seh.png"><br>
+                </p>
+
+                <p>These VEH are stored in a linked list. When an exception handler is added it is added to the tail of the list.</p>
+
+                <pre>
+
+    typedef struct _RTL_VECTORED_HANDLER_ENTRY
+    {
+        LIST_ENTRY ListEntry;
+        PVECTORED_EXCEPTION_HANDLER VectoredHandler;
+        ULONG Refs;
+    } RTL_VECTORED_HANDLER_ENTRY, *PRTL_VECTORED_HANDLER_ENTRY;
+                </pre>
+
+                <p style="font-size: 70%">
+                    <img src="assets/10-11-2025/veh_exception_handler_list.png"><br>
+                </p>
+                <p>When an exception is raised the list is walked through and calls the handlers that were registered. After that the SEH handlers are called.</p>
+            </div>
+            <div>
+                <h2>Conclusion</h2>
+                <p>In this blog we took a look at SEH and how it is implemented on x86_64. We went through the entire process from when the processor generates an interrupt to the exception handler being called. While I looked at ReactOS code in here the behaviour will be similar on Windows.</p>
+            </div>
+            <div>
+                <h2>Credits</h2>
+                <a href="https://github.com/reactos/reactos">-> ReactOS</a> <br>
+                <a href="https://reactos.org/wiki/Techwiki:SEH64">-> ReactOS Techwiki:SEH64</a> <br>
+                <a href="https://blog.elmo.sg/posts/structured-exception-handler-x64/">-> A deep dive into modern Windows Structured Exception Handler</a> <br>
+                <a href="https://blog.talosintelligence.com/exceptional-behavior-windows-81-x64-seh/">-> Exceptional behavior: the Windows 8.1 X64 SEH Implementation</a> <br>
+                <a href="https://www.osronline.com/article.cfm%5earticle=469.htm">-> Exceptional Behavior - x64 Structured Exception Handling</a> <br>
+                <a href="https://limbioliong.wordpress.com/2022/01/09/understanding-windows-structured-exception-handling-part-1/">-> Understanding Windows Structured Exception Handling</a> <br>
+            </div>
+        </div>
+    </body>
+</html>
